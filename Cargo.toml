@@ -4,6 +4,26 @@ version = "0.1.0"
 edition = "2021"
 description = "Fast Goldbach partition solver using adaptive double-sieve with parallel BPSW"
 
+[lib]
+name = "blazing_goldbach"
+path = "src/lib.rs"
+
+[[bin]]
+name = "goldbach"
+path = "src/bin/goldbach.rs"
+
+[[bin]]
+name = "extreme"
+path = "src/bin/extreme.rs"
+
+[[bin]]
+name = "bench"
+path = "tools/solve_bench.rs"
+
+[[bin]]
+name = "sample"
+path = "src/bin/sample.rs"
+
 [dependencies]
 rug = { version = "1", features = ["integer"] }
 rayon = "1"

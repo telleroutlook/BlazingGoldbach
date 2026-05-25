@@ -10,5 +10,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install GMP build deps
         run: sudo apt-get update && sudo apt-get install -y libgmp-dev m4
-      - run: cargo test --release
-      - run: cargo run --release -- 12345678901234567890
+      - name: Build all targets
+        run: cargo build --release
+      - name: Run tests
+        run: cargo test --release
+      - name: Smoke test goldbach binary
+        run: cargo run --release --bin goldbach -- 12345678901234567890
+      - name: Smoke test extreme binary
+        run: cargo run --release --bin extreme -- primorial 10
+      - name: Smoke test bench binary
+        run: cargo run --release --bin bench

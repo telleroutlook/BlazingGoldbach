@@ -1,11 +1,7 @@
-mod primes;
-mod sieve;
-mod solver;
-
 use std::env;
 use std::time::Instant;
 use rug::Integer;
-use solver::solve;
+use blazing_goldbach::{Config, solve};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -44,8 +40,9 @@ fn main() {
     let digit_count = n.to_string().len();
     println!("N = {} ({} digits)", n, digit_count);
 
+    let cfg = Config::default();
     let start = Instant::now();
-    match solve(&n) {
+    match solve(&n, &cfg) {
         Some(result) => {
             let elapsed = start.elapsed();
             println!("p = {}", result.p);
@@ -62,7 +59,6 @@ fn main() {
 
 fn generate_random_even(digits: usize) -> Integer {
     use std::time::{SystemTime, UNIX_EPOCH};
-    // Simple seeded random for demo purposes
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -70,7 +66,6 @@ fn generate_random_even(digits: usize) -> Integer {
     let mut state = seed;
 
     let mut s = String::with_capacity(digits);
-    // First digit: 1-9
     state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
     s.push(char::from_digit(((state >> 33) % 9 + 1) as u32, 10).unwrap());
 
@@ -79,7 +74,6 @@ fn generate_random_even(digits: usize) -> Integer {
         s.push(char::from_digit(((state >> 33) % 10) as u32, 10).unwrap());
     }
 
-    // Ensure last digit is even
     let last_even = ['0', '2', '4', '6', '8'];
     state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
     let last_char = last_even[((state >> 33) % 5) as usize];

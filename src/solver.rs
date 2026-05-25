@@ -1,7 +1,9 @@
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
-use rug::{Assign, Integer, integer::IsPrime};
+use rug::{Integer, integer::IsPrime};
 
+use crate::config::Config;
+use crate::modulo::compute_remainders;
 use crate::primes::primes_up_to;
 use crate::sieve::{double_sieve, segmented_sieve};
 
@@ -11,86 +13,92 @@ pub struct GoldbachResult {
     pub p: Integer,
     pub q: Integer,
     pub attempts: u64,
+    /// How many candidates were in the segment that found the answer.
+    pub candidates_in_segment: usize,
+    /// How many survived the double-sieve (sent to BPSW) in that segment.
+    pub survivors_in_segment: usize,
+}
+
+impl GoldbachResult {
+    /// Fraction of candidates eliminated by double-sieve in the winning segment.
+    pub fn sieve_elimination_rate(&self) -> f64 {
+        if self.candidates_in_segment == 0 {
+            return 0.0;
+        }
+        1.0 - self.survivors_in_segment as f64 / self.candidates_in_segment as f64
+    }
 }
 
 /// Check if `n` is (probably) prime using GMP's BPSW + Miller-Rabin.
-fn is_prime(n: &Integer) -> bool {
-    n.is_probably_prime(25) != IsPrime::No
+fn is_prime(n: &Integer, mr_rounds: u32) -> bool {
+    n.is_probably_prime(mr_rounds) != IsPrime::No
 }
 
 /// Parallel race: find any survivor p where N-p is prime.
-/// `counter` tracks actual BPSW invocations (accurate despite find_any short-circuit).
-fn parallel_race(n: &Integer, survivors: &[u64], counter: &AtomicU64) -> Option<u64> {
+fn parallel_race(n: &Integer, survivors: &[u64], counter: &AtomicU64, mr_rounds: u32) -> Option<u64> {
     survivors
         .par_iter()
         .find_any(|&&p| {
             counter.fetch_add(1, Ordering::Relaxed);
             let target = Integer::from(n - p);
-            is_prime(&target)
+            is_prime(&target, mr_rounds)
         })
         .copied()
 }
 
 /// Solve Goldbach partition for even integer N >= 6.
-pub fn solve(n: &Integer) -> Option<GoldbachResult> {
+pub fn solve(n: &Integer, cfg: &Config) -> Option<GoldbachResult> {
     assert!(*n >= 6u32, "N must be >= 6");
     assert!(n.is_even(), "N must be even");
+
+    let mr = cfg.mr_rounds;
 
     // Step 0: try p=2
     let mut attempts: u64 = 1;
     let n_minus_2 = Integer::from(n - 2u32);
-    if is_prime(&n_minus_2) {
+    if is_prime(&n_minus_2, mr) {
         return Some(GoldbachResult {
             p: Integer::from(2u32),
             q: n_minus_2,
             attempts,
+            candidates_in_segment: 0,
+            survivors_in_segment: 0,
         });
     }
 
     // Step 1: serial check first ~20 odd primes before the sieve.
-    // This handles small N (where N-p can equal a sieve prime) and
-    // covers the common case where p_min is tiny.
     let early_primes = [3u64, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73];
     for &p in &early_primes {
         attempts += 1;
         let target = Integer::from(n - p);
-        if is_prime(&target) {
+        if is_prime(&target, mr) {
             return Some(GoldbachResult {
                 p: Integer::from(p),
                 q: target,
                 attempts,
+                candidates_in_segment: 0,
+                survivors_in_segment: 0,
             });
         }
     }
 
-    // Sieve boundary R
-    let r_bound: u64 = 100_000;
-    let small_primes = primes_up_to(r_bound);
+    // Two independent sieve roles:
+    // - judge_primes (up to sieve_judge_bound): for segmented_sieve primality testing
+    // - screen_primes (up to sieve_screen_bound): for double_sieve eliminating N-p composites
+    let judge_primes = primes_up_to(cfg.sieve_judge_bound);
+    let screen_primes = primes_up_to(cfg.sieve_screen_bound);
 
-    // Precompute N mod r for each small prime
-    let rem: Vec<u64> = if let Some(nval) = n.to_u64() {
-        small_primes.iter().map(|&sp| nval % sp).collect()
-    } else {
-        let mut sp_int = Integer::new();
-        let mut remainder = Integer::new();
-        small_primes
-            .iter()
-            .map(|&sp| {
-                sp_int.assign(sp);
-                remainder.assign(n % &sp_int);
-                remainder.to_u64().unwrap()
-            })
-            .collect()
-    };
+    // Precompute N mod r for screening primes
+    let rem = compute_remainders(n, &screen_primes, &cfg.modulo_strategy);
 
     let n_u64 = n.to_u64();
 
-    let mut base: u64 = 79; // start after the early primes we already checked
-    let mut b: usize = 4096;
+    let mut base: u64 = cfg.base_start;
+    let mut b: usize = cfg.segment_init;
 
     loop {
-        let is_p_prime = segmented_sieve(base, b, &small_primes);
-        let nmp_comp = double_sieve(base, b, &small_primes, &rem);
+        let is_p_prime = segmented_sieve(base, b, &judge_primes);
+        let nmp_comp = double_sieve(base, b, &screen_primes, &rem);
 
         let mut survivors: Vec<u64> = Vec::new();
         for i in 0..b {
@@ -105,16 +113,21 @@ pub fn solve(n: &Integer) -> Option<GoldbachResult> {
             }
         }
 
+        let candidate_count = survivors.len();
         if !survivors.is_empty() {
-            let serial_count = survivors.len().min(2);
+            let serial_count = survivors.len().min(cfg.serial_head);
             for &p in &survivors[..serial_count] {
                 attempts += 1;
                 let target = Integer::from(n - p);
-                if is_prime(&target) && is_prime(&Integer::from(p)) {
+                if is_prime(&target, mr) && is_prime(&Integer::from(p), mr) {
+                    debug_assert!(is_prime(&target, mr), "q must be prime");
+                    debug_assert_eq!(Integer::from(p + &target), *n, "p + q must equal N");
                     return Some(GoldbachResult {
                         p: Integer::from(p),
                         q: target,
                         attempts,
+                        candidates_in_segment: b,
+                        survivors_in_segment: candidate_count,
                     });
                 }
             }
@@ -122,15 +135,19 @@ pub fn solve(n: &Integer) -> Option<GoldbachResult> {
             if survivors.len() > serial_count {
                 let rest = &survivors[serial_count..];
                 let counter = AtomicU64::new(0);
-                if let Some(p) = parallel_race(n, rest, &counter) {
+                if let Some(p) = parallel_race(n, rest, &counter, mr) {
                     attempts += counter.into_inner();
                     let p_int = Integer::from(p);
-                    assert!(is_prime(&p_int), "sieve incorrectly marked composite {p} as prime");
+                    assert!(is_prime(&p_int, mr), "sieve incorrectly marked composite {p} as prime");
                     let q = Integer::from(n - &p_int);
+                    debug_assert!(is_prime(&q, mr), "q must be prime");
+                    debug_assert_eq!(Integer::from(&p_int + &q), *n, "p + q must equal N");
                     return Some(GoldbachResult {
                         p: p_int,
                         q,
                         attempts,
+                        candidates_in_segment: b,
+                        survivors_in_segment: candidate_count,
                     });
                 }
                 attempts += counter.into_inner();
@@ -138,10 +155,11 @@ pub fn solve(n: &Integer) -> Option<GoldbachResult> {
         }
 
         base += b as u64;
-        b *= 2;
-        // Cap b so segmented sieve stays correct (primes ≤ R must cover √(base+b))
-        let r_sq = r_bound * r_bound;
-        b = b.min(r_sq.saturating_sub(base) as usize);
+        b *= cfg.segment_growth;
+        // Cap b so segmented sieve stays correct:
+        // judge_primes must cover sqrt(base + b), so b <= judge_bound^2 - base
+        let judge_sq = cfg.sieve_judge_bound * cfg.sieve_judge_bound;
+        b = b.min(judge_sq.saturating_sub(base) as usize);
         if b == 0 {
             break None;
         }
@@ -155,17 +173,63 @@ mod tests {
     #[test]
     fn test_small_goldbach() {
         let test_cases: Vec<u32> = vec![6, 8, 10, 100, 1000, 10000];
+        let cfg = Config::default();
         for n_val in test_cases {
             let n = Integer::from(n_val);
-            let result = solve(&n).unwrap_or_else(|| panic!("Failed for N={}", n_val));
+            let result = solve(&n, &cfg).unwrap_or_else(|| panic!("Failed for N={}", n_val));
             assert_eq!(
                 Integer::from(&result.p + &result.q),
                 n,
                 "p+q != N for N={}",
                 n_val
             );
-            assert!(is_prime(&result.p), "p={} is not prime", result.p);
-            assert!(is_prime(&result.q), "q={} is not prime", result.q);
+            assert!(is_prime(&result.p, cfg.mr_rounds), "p={} is not prime", result.p);
+            assert!(is_prime(&result.q, cfg.mr_rounds), "q={} is not prime", result.q);
+        }
+    }
+
+    /// Differential test: brute-force minimum p for small N, compare with solve.
+    fn brute_force_min_p(n: u64) -> u64 {
+        let primes = crate::primes::primes_up_to(n);
+        let prime_set: std::collections::HashSet<u64> = primes.iter().copied().collect();
+        for &p in &primes {
+            if p > n / 2 {
+                break;
+            }
+            let q = n - p;
+            if prime_set.contains(&q) {
+                return p;
+            }
+        }
+        panic!("No partition found for N={}", n);
+    }
+
+    #[test]
+    fn test_differential_small() {
+        let cfg = Config::default();
+        for n_val in (6..=500).step_by(2) {
+            let n = Integer::from(n_val);
+            let result = solve(&n, &cfg).unwrap_or_else(|| panic!("Failed for N={}", n_val));
+            let expected_p = brute_force_min_p(n_val);
+            assert_eq!(
+                result.p, Integer::from(expected_p),
+                "solve found p={} but brute-force found p_min={} for N={}",
+                result.p, expected_p, n_val
+            );
+        }
+    }
+
+    #[test]
+    fn test_verification_invariant() {
+        // Every result must satisfy: p prime, q prime, p+q=N
+        let cfg = Config::default();
+        for n_val in [6u64, 100, 1000, 1000000, 9999999998] {
+            let n = Integer::from(n_val);
+            if let Some(result) = solve(&n, &cfg) {
+                assert!(is_prime(&result.p, cfg.mr_rounds), "p not prime for N={}", n_val);
+                assert!(is_prime(&result.q, cfg.mr_rounds), "q not prime for N={}", n_val);
+                assert_eq!(Integer::from(&result.p + &result.q), n, "p+q != N for N={}", n_val);
+            }
         }
     }
 }
