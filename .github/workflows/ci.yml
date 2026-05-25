@@ -1,0 +1,14 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GMP build deps
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev m4
+      - run: cargo test --release
+      - run: cargo run --release -- 12345678901234567890

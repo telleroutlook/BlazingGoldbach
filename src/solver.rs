@@ -110,7 +110,7 @@ pub fn solve(n: &Integer) -> Option<GoldbachResult> {
             for &p in &survivors[..serial_count] {
                 attempts += 1;
                 let target = Integer::from(n - p);
-                if is_prime(&target) {
+                if is_prime(&target) && is_prime(&Integer::from(p)) {
                     return Some(GoldbachResult {
                         p: Integer::from(p),
                         q: target,
@@ -124,9 +124,12 @@ pub fn solve(n: &Integer) -> Option<GoldbachResult> {
                 let counter = AtomicU64::new(0);
                 if let Some(p) = parallel_race(n, rest, &counter) {
                     attempts += counter.into_inner();
+                    let p_int = Integer::from(p);
+                    assert!(is_prime(&p_int), "sieve incorrectly marked composite {p} as prime");
+                    let q = Integer::from(n - &p_int);
                     return Some(GoldbachResult {
-                        p: Integer::from(p),
-                        q: Integer::from(n - p),
+                        p: p_int,
+                        q,
                         attempts,
                     });
                 }
@@ -136,6 +139,12 @@ pub fn solve(n: &Integer) -> Option<GoldbachResult> {
 
         base += b as u64;
         b *= 2;
+        // Cap b so segmented sieve stays correct (primes ≤ R must cover √(base+b))
+        let r_sq = r_bound * r_bound;
+        b = b.min(r_sq.saturating_sub(base) as usize);
+        if b == 0 {
+            break None;
+        }
     }
 }
 

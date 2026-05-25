@@ -7,3 +7,7 @@ description = "Fast Goldbach partition solver using adaptive double-sieve with p
 [dependencies]
 rug = { version = "1", features = ["integer"] }
 rayon = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
