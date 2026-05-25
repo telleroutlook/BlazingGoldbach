@@ -1,0 +1,9 @@
+[package]
+name = "blazing-goldbach"
+version = "0.1.0"
+edition = "2021"
+description = "Fast Goldbach partition solver using adaptive double-sieve with parallel BPSW"
+
+[dependencies]
+rug = { version = "1", features = ["integer"] }
+rayon = "1"
