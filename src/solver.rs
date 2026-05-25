@@ -1,5 +1,6 @@
 use rayon::prelude::*;
-use rug::{Integer, integer::IsPrime};
+use std::sync::atomic::{AtomicU64, Ordering};
+use rug::{Assign, Integer, integer::IsPrime};
 
 use crate::primes::primes_up_to;
 use crate::sieve::{double_sieve, segmented_sieve};
@@ -18,10 +19,12 @@ fn is_prime(n: &Integer) -> bool {
 }
 
 /// Parallel race: find any survivor p where N-p is prime.
-fn parallel_race(n: &Integer, survivors: &[u64]) -> Option<u64> {
+/// `counter` tracks actual BPSW invocations (accurate despite find_any short-circuit).
+fn parallel_race(n: &Integer, survivors: &[u64], counter: &AtomicU64) -> Option<u64> {
     survivors
         .par_iter()
         .find_any(|&&p| {
+            counter.fetch_add(1, Ordering::Relaxed);
             let target = Integer::from(n - p);
             is_prime(&target)
         })
@@ -68,9 +71,15 @@ pub fn solve(n: &Integer) -> Option<GoldbachResult> {
     let rem: Vec<u64> = if let Some(nval) = n.to_u64() {
         small_primes.iter().map(|&sp| nval % sp).collect()
     } else {
+        let mut sp_int = Integer::new();
+        let mut remainder = Integer::new();
         small_primes
             .iter()
-            .map(|&sp| (n % Integer::from(sp)).to_u64().unwrap())
+            .map(|&sp| {
+                sp_int.assign(sp);
+                remainder.assign(n % &sp_int);
+                remainder.to_u64().unwrap()
+            })
             .collect()
     };
 
@@ -112,14 +121,16 @@ pub fn solve(n: &Integer) -> Option<GoldbachResult> {
 
             if survivors.len() > serial_count {
                 let rest = &survivors[serial_count..];
-                attempts += rest.len() as u64;
-                if let Some(p) = parallel_race(n, rest) {
+                let counter = AtomicU64::new(0);
+                if let Some(p) = parallel_race(n, rest, &counter) {
+                    attempts += counter.into_inner();
                     return Some(GoldbachResult {
                         p: Integer::from(p),
                         q: Integer::from(n - p),
                         attempts,
                     });
                 }
+                attempts += counter.into_inner();
             }
         }
 

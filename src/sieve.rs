@@ -42,7 +42,7 @@ pub fn double_sieve(base: u64, b: usize, small_primes: &[u64], rem: &[u64]) -> V
         // N-p ≡ 0 (mod r)  <=>  p ≡ N (mod r)
         // Find first i in [0, B) where (base + i) mod r == N mod r
         let base_mod = base % r;
-        let target = nr % r;
+        let target = nr;
         let offset = if target >= base_mod {
             (target - base_mod) as usize
         } else {
