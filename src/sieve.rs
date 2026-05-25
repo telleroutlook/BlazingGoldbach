@@ -35,7 +35,8 @@ pub fn segmented_sieve(base: u64, b: usize, small_primes: &[u64]) -> Vec<u8> {
 
 /// Double-sieve: for each small prime r, mark positions where (N-p) % r == 0.
 /// `rem[r]` = N mod r (precomputed once). Returns a bitvec where 1 = N-p is divisible by some small prime.
-pub fn double_sieve(base: u64, b: usize, small_primes: &[u64], rem: &[u64]) -> Vec<u8> {
+/// When `n_u64` is provided, the position p = N-r is skipped because N-p = r is prime.
+pub fn double_sieve(base: u64, b: usize, small_primes: &[u64], rem: &[u64], n_u64: Option<u64>) -> Vec<u8> {
     let mut nmp_comp = vec![0u8; b];
     for (idx, &r) in small_primes.iter().enumerate() {
         let nr = rem[idx];
@@ -48,8 +49,28 @@ pub fn double_sieve(base: u64, b: usize, small_primes: &[u64], rem: &[u64]) -> V
         } else {
             (target + r - base_mod) as usize
         };
+
+        let skip = if let Some(nval) = n_u64 {
+            if nval > r {
+                let p_skip = nval - r;
+                if p_skip >= base && p_skip < base + b as u64 {
+                    Some((p_skip - base) as usize)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let mut i = offset;
         while i < b {
+            if skip == Some(i) {
+                i += r as usize;
+                continue;
+            }
             nmp_comp[i] = 1;
             i += r as usize;
         }

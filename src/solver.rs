@@ -34,11 +34,11 @@ fn is_prime(n: &Integer, mr_rounds: u32) -> bool {
     n.is_probably_prime(mr_rounds) != IsPrime::No
 }
 
-/// Parallel race: find any survivor p where N-p is prime.
+/// Parallel race: find the smallest survivor p where N-p is prime.
 fn parallel_race(n: &Integer, survivors: &[u64], counter: &AtomicU64, mr_rounds: u32) -> Option<u64> {
     survivors
         .par_iter()
-        .find_any(|&&p| {
+        .find_first(|&&p| {
             counter.fetch_add(1, Ordering::Relaxed);
             let target = Integer::from(n - p);
             is_prime(&target, mr_rounds)
@@ -98,7 +98,7 @@ pub fn solve(n: &Integer, cfg: &Config) -> Option<GoldbachResult> {
 
     loop {
         let is_p_prime = segmented_sieve(base, b, &judge_primes);
-        let nmp_comp = double_sieve(base, b, &screen_primes, &rem);
+        let nmp_comp = double_sieve(base, b, &screen_primes, &rem, n_u64);
 
         let mut survivors: Vec<u64> = Vec::new();
         for i in 0..b {
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn test_differential_small() {
         let cfg = Config::default();
-        for n_val in (6..=500).step_by(2) {
+        for n_val in (6..=10_000).step_by(2) {
             let n = Integer::from(n_val);
             let result = solve(&n, &cfg).unwrap_or_else(|| panic!("Failed for N={}", n_val));
             let expected_p = brute_force_min_p(n_val);
