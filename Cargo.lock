@@ -12,7 +12,6 @@ checksum = "be5eb007b7cacc6c660343e96f650fedf4b5a77512399eb952ca6642cf8d13f7"
 name = "blazing-goldbach"
 version = "0.1.0"
 dependencies = [
- "gmp-mpfr-sys",
  "rayon",
  "rug",
 ]
