@@ -3,3 +3,6 @@
 *.swo
 *~
 .env
+
+# macOS Apple Double files
+._*
