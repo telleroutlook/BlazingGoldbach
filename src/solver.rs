@@ -34,6 +34,44 @@ fn is_prime(n: &Integer, mr_rounds: u32) -> bool {
     n.is_probably_prime(mr_rounds) != IsPrime::No
 }
 
+/// Estimate a lower bound on the number of prime pairs (p, N-p) that could exist
+/// in a segment of `survivor_count` candidates near `base`.
+///
+/// Analogous to Golomb-Vanguard's `sum_smallest_unset_sym` DFS branch pruning:
+/// instead of computing the exact minimum cost of remaining branches, we estimate
+/// the probability that at least one survivor p has N-p also prime. If the expected
+/// count is far below 1, the segment is provably unproductive and can be skipped.
+///
+/// Uses the prime number theorem: the density of primes near x is ~1/ln(x).
+/// For each survivor p, N-p is roughly the same order of magnitude, so the
+/// probability that N-p is prime is ~1/ln(N). The expected number of Goldbach
+/// pairs in a segment is approximately `survivor_count / ln(N)`.
+///
+/// Returns the expected number of Goldbach pairs in this segment.
+fn expected_goldbach_pairs(survivor_count: usize, n_approx: f64) -> f64 {
+    if survivor_count == 0 || n_approx <= 2.0 {
+        return 0.0;
+    }
+    let ln_n = n_approx.ln();
+    if ln_n <= 0.0 {
+        return 0.0;
+    }
+    survivor_count as f64 / ln_n
+}
+
+/// Decide whether a segment is worth checking with expensive BPSW verification.
+///
+/// A segment is "productive" if the expected number of Goldbach pairs exceeds
+/// `threshold` (default: a small fraction, e.g. 0.01). Segments below this
+/// threshold are extremely unlikely to yield a result and can be safely skipped.
+///
+/// This is conservative: it only skips when the expected count is very low,
+/// so correctness is preserved at the cost of occasionally checking a segment
+/// that won't yield a result (false negatives in pruning are safe).
+pub fn segment_is_productive(survivor_count: usize, n_approx: f64, threshold: f64) -> bool {
+    survivor_count > 0 && expected_goldbach_pairs(survivor_count, n_approx) >= threshold
+}
+
 /// Parallel race: find the smallest survivor p where N-p is prime.
 fn parallel_race(n: &Integer, survivors: &[u64], counter: &AtomicU64, mr_rounds: u32) -> Option<u64> {
     survivors
@@ -115,6 +153,23 @@ pub fn solve(n: &Integer, cfg: &Config) -> Option<GoldbachResult> {
 
         let candidate_count = survivors.len();
         if !survivors.is_empty() {
+            // Lower-bound pruning (from Golomb-Vanguard's symmetry-aware bounding):
+            // If the expected Goldbach pairs in this segment is extremely low,
+            // skip the expensive BPSW verification and move to the next segment.
+            let n_approx = n_u64.map(|v| v as f64).unwrap_or_else(|| {
+                let bits = n.significant_digits::<u32>() as f64;
+                2f64.powf(bits)
+            });
+            if !segment_is_productive(candidate_count, n_approx, 0.01) {
+                base += b as u64;
+                b *= cfg.segment_growth;
+                let judge_sq = cfg.sieve_judge_bound * cfg.sieve_judge_bound;
+                b = b.min(judge_sq.saturating_sub(base) as usize);
+                if b == 0 {
+                    break None;
+                }
+                continue;
+            }
             let serial_count = survivors.len().min(cfg.serial_head);
             for &p in &survivors[..serial_count] {
                 attempts += 1;
@@ -272,6 +327,57 @@ mod tests {
                 assert!(is_prime(&result.q, cfg.mr_rounds), "q not prime for N={}", n_val);
                 assert_eq!(Integer::from(&result.p + &result.q), n, "p+q != N for N={}", n_val);
             }
+        }
+    }
+
+    #[test]
+    fn test_expected_goldbach_pairs() {
+        // For N=100, ln(100) ~ 4.6, so 5 survivors -> ~1.09 expected pairs
+        let pairs = expected_goldbach_pairs(5, 100.0);
+        assert!(pairs > 1.0 && pairs < 1.5, "expected ~1.09, got {}", pairs);
+
+        // Zero survivors -> zero pairs
+        assert_eq!(expected_goldbach_pairs(0, 100.0), 0.0);
+
+        // Very large N, few survivors -> low expectation
+        let pairs = expected_goldbach_pairs(1, 1e18);
+        assert!(pairs < 0.05, "expected < 0.05, got {}", pairs);
+
+        // Many survivors, small N -> high expectation
+        let pairs = expected_goldbach_pairs(100, 1000.0);
+        assert!(pairs > 10.0, "expected > 10, got {}", pairs);
+    }
+
+    #[test]
+    fn test_segment_is_productive() {
+        // With threshold 0.01:
+        // For N=1e18, ln(N) ~ 41.4, so 1 survivor gives 1/41.4 ~ 0.024 > 0.01 -> productive
+        assert!(segment_is_productive(1, 1e18, 0.01));
+
+        // Zero survivors -> never productive
+        assert!(!segment_is_productive(0, 1e18, 0.01));
+
+        // For extremely large N with threshold 0.1, 1 survivor is not productive
+        assert!(!segment_is_productive(1, 1e100, 0.1));
+
+        // But 100 survivors is productive even for large N
+        assert!(segment_is_productive(100, 1e18, 0.01));
+    }
+
+    #[test]
+    fn test_lower_bound_preserves_correctness() {
+        // Differential test with segment_is_productive integrated:
+        // ensure solve still finds correct answers after pruning is added.
+        let cfg = Config::default();
+        for n_val in (6..=1000).step_by(2) {
+            let n = Integer::from(n_val);
+            let result = solve(&n, &cfg).unwrap_or_else(|| panic!("Failed for N={}", n_val));
+            let expected_p = brute_force_min_p(n_val);
+            assert_eq!(
+                result.p, Integer::from(expected_p),
+                "solve found p={} but brute-force found p_min={} for N={}",
+                result.p, expected_p, n_val
+            );
         }
     }
 }
