@@ -10,6 +10,8 @@
 
 Solve `p + q = N` for even numbers from single digits to **thousands of digits** — with adaptive sieves, parallel BPSW, and sub-5ms benchmarks at 100 digits.
 
+> **Clarification:** This tool finds one Goldbach partition `(p, q)` for a given even `N`. It does **not** prove the Goldbach conjecture, nor does it enumerate all partitions.
+
 </div>
 
 ---
@@ -50,7 +52,7 @@ Input N (even, >= 6)
 | 200 digits | 10–50 ms | — | >98% |
 | Primorial(50) | seconds | — | — |
 
-Solution `p_min` is typically small (2–4 digits for 100-digit inputs), which the early-check exploits.
+Solution `p_min` is typically small (2–4 digits for 100-digit inputs). This is a known statistical property of Goldbach partitions — smaller primes are more likely to pair with large `N` — which the early small-prime check exploits.
 
 ---
 
