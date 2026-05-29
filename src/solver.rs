@@ -166,6 +166,48 @@ pub fn solve(n: &Integer, cfg: &Config) -> Option<GoldbachResult> {
     }
 }
 
+/// Dynamically adjust sieve segment size based on survival density.
+/// Borrowed from Golomb-Vanguard's sum_smallest_unset_sym dynamic bounding:
+/// if many candidates survive in early segments, we can use smaller segments
+/// for more precise filtering; if few survive, larger segments batch more
+/// candidates per sieve pass, amortizing the fixed sieve setup cost.
+///
+/// The survival ratio is interpolated linearly between two thresholds:
+///   - ratio > 0.1  (dense): return `min_size` for precision
+///   - ratio < 0.01 (sparse): return `max_size` for throughput
+///   - in between:   linearly interpolate
+pub fn adaptive_segment_size(
+    base_segment_size: usize,
+    survivors_found: usize,
+    candidates_scanned: usize,
+    min_size: usize,
+    max_size: usize,
+) -> usize {
+    if candidates_scanned == 0 {
+        return base_segment_size;
+    }
+    let ratio = survivors_found as f64 / candidates_scanned as f64;
+
+    const HIGH_THRESHOLD: f64 = 0.1;
+    const LOW_THRESHOLD: f64 = 0.01;
+
+    let size = if ratio >= HIGH_THRESHOLD {
+        // Dense survival: use small segments for precision.
+        min_size
+    } else if ratio <= LOW_THRESHOLD {
+        // Sparse survival: use large segments to amortize sieve cost.
+        max_size
+    } else {
+        // Linear interpolation between min and max.
+        let t = (HIGH_THRESHOLD - ratio) / (HIGH_THRESHOLD - LOW_THRESHOLD);
+        let interpolated = min_size as f64 + t * (max_size - min_size) as f64;
+        interpolated.round() as usize
+    };
+
+    // Always clamp to [min_size, max_size] and respect the base as a fallback.
+    size.clamp(min_size, max_size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
